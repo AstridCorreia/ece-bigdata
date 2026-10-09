@@ -1,0 +1,20 @@
+[project]
+name = "ece-bigdata"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "a-correia-ece", email = "astrid.correia@edu.ece.fr" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "faker>=40.41.0",
+]
+
+[project.scripts]
+dataset-users = "ece_bigdata.dataset_users:main"
+dataset-orders = "ece_bigdata.dataset_orders:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
