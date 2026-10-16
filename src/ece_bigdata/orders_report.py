@@ -12,32 +12,39 @@ def orders_report(product=None):
             "La variable LAB_BUCKET_NAME n'est pas définie."
         )
 
-    parquet_path = f"s3://{bucket}/analytics/orders_by_product/**/*.parquet"
+    csv_path = f"s3://{bucket}/bronze/orders.csv"
 
     query = """
         SELECT
             date_trunc('month', date)::DATE AS month,
-            product,
             COUNT(*) AS number_of_orders,
             SUM(quantity) AS total_quantity
-        FROM read_parquet(?)
+        FROM read_csv_auto(?, header = true)
     """
 
-    params = [parquet_path]
+    params = [csv_path]
 
     if product:
         query += " WHERE product = ?"
         params.append(product)
 
     query += """
-        GROUP BY month, product
-        ORDER BY month, product
+        GROUP BY month
+        ORDER BY month
     """
 
     with duckdb.connect() as con:
-        report = con.execute(query, params).df()
+        report = con.execute(query, params).fetchall()
 
-    print(report.to_string(index=False))
+    print("Rapport mensuel des commandes")
+    print("==============================")
+
+    for month, number_of_orders, total_quantity in report:
+        print(
+            f"{month:%Y-%m} : {number_of_orders} commandes, "
+            f"{total_quantity} unités vendues"
+        )
+
     return report
 
 

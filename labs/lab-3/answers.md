@@ -1,36 +1,24 @@
-# TP 3 — Analyse de données avec DuckDB et Parquet
+# TP 3 — DuckDB et Parquet
 
-## 1. Analyse SQL des commandes
+## 1. Requêtes SQL
 
 ### 1.1 Moyennes
 
-La quantité moyenne par commande est d'environ **3,045 unités**.
+Le nombre moyen de commandes par utilisateur est de **56,58**. La quantité moyenne par commande est d'environ **3,045 produits**.
 
-Le nombre moyen de commandes par utilisateur est de **56,58**.
+### 1.2 Première et dernière commande
 
-Ces moyennes donnent une vue générale de l'activité des utilisateurs et du volume de produits commandés.
+Pour chaque utilisateur, on récupère la date de sa première commande et celle de sa dernière commande. On calcule ensuite le nombre de jours entre les deux dates.
 
-### 1.2 Première et dernière commande par utilisateur
+D'après les résultats obtenus, la différence ne dépasse pas 5 jours.
 
-Pour chaque utilisateur, on recherche la date de sa première commande, la date de sa dernière commande et le nombre de jours séparant ces deux dates.
+### 1.3 Quantités selon l'heure
 
-Cette analyse permet d'observer la durée pendant laquelle chaque utilisateur a passé des commandes. Dans les résultats obtenus, l'écart entre la première et la dernière commande ne dépassait pas 5 jours.
+L'heure avec la plus grande quantité commandée est **6 h**, avec 385 unités pour 118 commandes. La deuxième heure est 15 h, avec 382 unités.
 
-La requête SQL utilisée doit calculer les dates minimale et maximale par utilisateur, puis la différence en jours entre ces deux dates.
+### 1.4 Évolution des ventes avec LAG
 
-### 1.3 Quantités commandées selon l'heure
-
-L'heure où la quantité totale commandée était la plus élevée est **6 h**, avec **385 unités réparties sur 118 commandes**.
-
-La deuxième heure la plus élevée était **15 h**, avec 382 unités.
-
-Cela indique que, dans ce jeu de données, l'activité est particulièrement importante à 6 h. Ce résultat décrit uniquement les données analysées et ne doit pas être généralisé sans autre étude.
-
-### 1.4 Évolution mensuelle par produit avec LAG
-
-La fonction SQL `LAG` permet de récupérer la valeur du mois précédent afin de calculer l'évolution mensuelle.
-
-Les pourcentages ci-dessous correspondent à la variation des quantités entre deux mois consécutifs.
+La fonction `LAG` permet de comparer les quantités vendues avec celles du mois précédent.
 
 | Produit | Janvier | Février | Mars | Avril |
 |---|---:|---:|---:|---:|
@@ -41,77 +29,87 @@ Les pourcentages ci-dessous correspondent à la variation des quantités entre d
 | donut | 438 | 314 (-28,31 %) | 321 (+2,23 %) | 317 (-1,25 %) |
 | drink | 377 | 365 (-3,18 %) | 402 (+10,14 %) | 349 (-13,18 %) |
 
-Le pain (`bread`) augmente entre janvier et mars, puis diminue en avril. Les quantités de brioches (`brioche`) et de cookies (`cookie`) diminuent sur l'ensemble de la période après janvier. Les croissants restent relativement stables entre février et avril.
+On remarque que les ventes de pain augmentent jusqu'en mars, puis baissent en avril. Les ventes de cookies diminuent chaque mois après janvier. Les croissants restent plutôt stables.
 
 ### 1.5 Utilisateurs ayant commandé tous les produits
 
-**45 utilisateurs sur 50** ont commandé chacun des six produits.
+**45 utilisateurs sur 50** ont commandé les six produits, soit 90 % des utilisateurs.
 
-Cela représente 90 % des utilisateurs analysés. Les cinq autres utilisateurs n'ont pas commandé au moins un des produits.
+## 2. Export Parquet et partitionnement
 
-## 2. Export et partitionnement Parquet
+J'ai exporté les commandes au format Parquet sur S3, en créant un dossier par produit.
 
-Les données ont été exportées au format Parquet et partitionnées par produit dans le dossier S3 `analytics/orders_by_product/`.
+Quand on cherche un produit précis, DuckDB peut lire uniquement le fichier correspondant au lieu de lire les six fichiers. Le test avec `EXPLAIN ANALYZE` a confirmé que seul 1 fichier sur 6 était lu.
 
-Le partitionnement crée une organisation par valeur de produit. Lorsqu'une requête ne concerne qu'un produit, DuckDB peut éviter de lire les fichiers des autres produits.
+Partitionner par UUID serait une mauvaise idée, car presque chaque commande possède un UUID différent. Cela créerait beaucoup trop de petits fichiers.
 
-Le test avec `EXPLAIN ANALYZE` a confirmé que DuckDB ne scannait qu'un fichier sur les six disponibles pour une requête filtrée sur un produit. Cela illustre le *partition pruning*, qui réduit les données à lire et peut accélérer les requêtes.
+Pour des commandes qui augmentent chaque jour, je choisirais plutôt la date, par exemple une partition par mois. Cela permettrait de retrouver plus facilement les commandes d'une période donnée.
 
-## 3. Comparaison entre CSV et Parquet à grande échelle
+## 3. CSV et Parquet à grande échelle
 
-### 3.1 Génération et nombre de lignes
+### 3.1 Nombre de commandes
 
-Le jeu de données généré avec 5 000 utilisateurs contenait **252 416 commandes** selon le comptage effectué sur le fichier Parquet.
+Le fichier généré avec 5 000 utilisateurs contient **252 416 commandes**. Le TP donne un exemple avec 999 490 commandes, mais les résultats ci-dessous correspondent au fichier que j'ai obtenu.
 
-Ce nombre est inférieur aux quelque 999 490 commandes mentionnées dans l'exemple du TP. Les mesures ci-dessous correspondent donc au jeu de données effectivement généré dans cet environnement.
+### 3.2 Taille des fichiers
 
-### 3.2 Comparaison des tailles
-
-| Format | Taille sur S3 |
+| Format | Taille |
 |---|---:|
 | CSV | 29 574 123 octets (environ 29,6 Mo) |
 | Parquet | 11 532 863 octets (environ 11,5 Mo) |
 
-Le fichier Parquet est environ **61 % plus petit** que le CSV, soit une économie d'environ 18 Mo.
+Le fichier Parquet est environ **61 % plus petit** que le CSV. Il prend donc moins de place sur S3.
 
-Parquet est un format en colonnes qui prend en charge la compression et permet de ne lire que les colonnes nécessaires à une requête. CSV est un format texte qui doit être analysé pour interpréter les valeurs.
+### 3.3 Temps de lecture
 
-### 3.3 Comparaison des temps d'exécution
-
-Les tests ont été réalisés avec le cache des fichiers externes désactivé.
-
-| Requête | Données lues | Temps total |
+| Requête | Données lues | Temps |
 |---|---:|---:|
-| Agrégation depuis le CSV | 28,2 MiB | 1,18 s |
-| Agrégation depuis le Parquet | 203,5 KiB | 0,345 s |
-| Comptage avec filtre de date sur Parquet | 16,0 KiB | 0,299 s |
+| Agrégation CSV | 28,2 MiB | 1,18 s |
+| Agrégation Parquet | 203,5 KiB | 0,345 s |
+| Filtre sur la date en Parquet | 16,0 KiB | 0,299 s |
 
-Pour l'agrégation testée, Parquet a été environ **3,4 fois plus rapide** que CSV.
+L'agrégation sur Parquet est environ **3,4 fois plus rapide** que celle sur CSV dans mes tests.
 
-La différence s'explique notamment par la compression, le stockage en colonnes et la possibilité de ne lire que les colonnes utiles. Les temps observés dépendent cependant de l'environnement, du réseau et de la taille des données.
+Avec le CSV, DuckDB doit télécharger et analyser le texte du fichier. Avec Parquet, il peut lire seulement les colonnes utiles et les données sont compressées. Cela réduit les transferts réseau et le temps de traitement. La mesure du temps total ne permet toutefois pas de séparer précisément ces deux effets.
 
-### 3.4 Métadonnées et groupes de lignes
+### 3.4 Métadonnées et filtre sur les dates
 
-L'inspection des métadonnées de `orders.parquet` a montré trois groupes de lignes, avec les plages de dates suivantes :
+Le fichier Parquet contient trois groupes de lignes. Les dates observées vont de 2020 à 2048 environ.
 
-- Groupe 0 : de janvier 2020 à février 2034.
-- Groupe 1 : de février 2034 à avril 2048.
-- Groupe 2 : d'avril 2048 à octobre 2048.
+Le filtre `date >= '2100-01-01'` renvoie **0 ligne**, car les dates du fichier sont toutes antérieures à 2100. DuckDB peut utiliser les dates minimales et maximales stockées dans les métadonnées pour éviter de lire les groupes qui ne correspondent pas au filtre.
 
-Les métadonnées Parquet comprennent notamment les valeurs minimales et maximales de certaines colonnes pour chaque groupe de lignes. DuckDB peut utiliser ces statistiques pour ignorer les groupes qui ne peuvent pas satisfaire un filtre.
+Si les commandes étaient mélangées au hasard, les dates seraient réparties dans davantage de groupes. DuckDB aurait alors plus de mal à ignorer certains groupes et le filtre pourrait être moins efficace.
 
-### 3.5 Filtrage sur les dates
+## 4. Questions sur les données et la sécurité
 
-La requête filtrant les commandes dont la date est supérieure ou égale au 1er janvier 2100 a renvoyé **0 ligne**.
+### 4.1 Secret S3
 
-Toutes les dates maximales observées dans les groupes étaient antérieures à 2100. DuckDB peut donc éviter de lire les données de ces groupes pour ce filtre. Cette optimisation est appelée *row-group pruning*.
+Le fichier du secret contient des informations qui permettent d'accéder à S3. Si quelqu'un peut lire ce fichier, il peut essayer d'utiliser ces informations pour accéder aux données.
 
-Lorsque les données sont ordonnées par date, les plages min/max des groupes peuvent être plus sélectives. Si les dates sont mélangées, davantage de groupes peuvent contenir des dates qui se chevauchent et l'optimisation peut être moins efficace.
+Sur Onyxia, le risque est limité par l'isolation des environnements et par l'utilisation d'identifiants temporaires. Mais un autre processus exécuté avec le même utilisateur peut aussi accéder au fichier.
 
-## 4. Conclusion
+Pour un Job Kubernetes, je donnerais uniquement les droits S3 nécessaires au travail demandé. J'utiliserais un mécanisme d'identité ou un secret Kubernetes avec des accès limités, sans mettre les identifiants dans le code ou dans Git.
 
-Ce TP a permis d'utiliser DuckDB pour analyser des commandes avec SQL, d'exporter les données vers Parquet, de les partitionner sur S3 et de mesurer les performances de requêtes.
+### 4.2 Approximation et types des colonnes
 
-Les tests réalisés montrent que Parquet occupe environ 61 % d'espace en moins que le CSV et que l'agrégation testée est environ 3,4 fois plus rapide. Le partitionnement et les statistiques des groupes de lignes permettent également de réduire les données lues.
+`approx_unique` donne une estimation du nombre de valeurs différentes. Le résultat n'est donc pas forcément exact : il indique par exemple 40 utilisateurs au lieu de 50, et 3167 UUID au lieu de 2829.
 
-Ces résultats illustrent l'intérêt de Parquet pour les traitements analytiques. Les performances mesurées restent propres au jeu de données et à l'environnement utilisés.
+DuckDB détecte les types des colonnes en lisant un échantillon du CSV. Si les premières lignes ne représentent pas bien le reste du fichier, certaines valeurs peuvent être mal interprétées ou provoquer des erreurs. On peut alors définir les types des colonnes manuellement.
+
+### 4.3 Compression Parquet
+
+Les UUID sont presque tous différents et difficiles à compresser. À l'inverse, une colonne avec peu de valeurs différentes, comme le produit, se compresse mieux.
+
+Certaines colonnes peuvent être légèrement plus grosses après compression, car le format doit aussi stocker des informations supplémentaires. Sur de petites colonnes, ce coût peut être supérieur au gain de compression.
+
+## 5. Python
+
+J'ai créé un script Python qui produit un rapport mensuel et permet de filtrer les résultats par produit.
+
+Il fonctionne avec les données Parquet partitionnées et renvoie un DataFrame. Le TP demande plutôt de lire `bronze/orders.csv` et d'afficher le mois, le nombre de commandes et la quantité totale. Mon script est donc une version un peu différente de celle demandée.
+
+## Conclusion
+
+Ce TP m'a permis de faire des requêtes SQL avec DuckDB, de stocker les données en Parquet sur S3 et de comparer les performances avec le CSV.
+
+Dans mes tests, Parquet prend environ 61 % de place en moins et l'agrégation est environ 3,4 fois plus rapide. Le partitionnement permet aussi d'éviter de lire les fichiers qui ne sont pas utiles.
