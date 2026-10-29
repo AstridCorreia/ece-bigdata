@@ -40,3 +40,18 @@ MD
 Les deux contiennent 2829 lignes, et un `EXCEPT` dans les deux sens renvoie 0 ligne : le fichier Parquet contient exactement les mêmes données que la vue.
 La différence, c'est que la vue refait la transformation à partir du CSV bronze à chaque requête (matérialisation logique), alors que le Parquet stocke le résultat une fois pour toutes (matérialisation physique). Si le CSV bronze change, la vue le voit tout de suite, mais le Parquet reste à l'ancienne version tant qu'on ne refait pas l'export.
 MD
+
+## Exercices
+
+### 1. Colonne `username_normalized`
+J'ai ajouté `lower(trim(username)) as username_normalized` dans `stg_users`. La colonne est documentée dans `silver.yml` avec deux tests, `not_null` et `unique` : chaque utilisateur doit avoir un username normalisé, et deux utilisateurs ne doivent pas avoir le même une fois les majuscules et les espaces enlevés. Les deux tests passent.
+
+
+### 2. Validation des commandes
+Deux des trois vérifications existaient déjà avec des tests génériques : `accepted_values` sur `product` vérifie que le produit est dans la liste attendue, et `relationships` sur `user_id` vérifie que chaque utilisateur existe dans `stg_users` (avec en plus le test singulier `assert_orders_have_users`).
+Pour vérifier que `quantity` est positive, il n'y a pas de test générique intégré dans dbt, donc j'ai écrit un test singulier `assert_orders_quantity_positive` qui renvoie les commandes avec `quantity <= 0`. Il passe.
+
+### 3. Dates de naissance invalides
+Dans `stg_users`, j'ai ajouté une CTE `first_orders` qui calcule la date de la première commande de chaque utilisateur à partir de `ref('stg_orders')`. Si la date de naissance est après cette première commande, `birthdate` est remplacée par NULL et `birthdate_is_valid` vaut false, sinon on garde la date et la colonne vaut true. La nouvelle colonne a des tests `not_null` et `accepted_values` (true/false).
+Résultat : 5 utilisateurs sur 50 ont une date de naissance invalide. Comme leurs dates sont maintenant à NULL, `assert_orders_after_user_birth` ne trouve plus aucune commande avant la naissance : j'ai donc enlevé le `severity='warn'` et le test passe à nouveau comme un vrai test bloquant.
+
