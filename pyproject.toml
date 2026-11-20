@@ -13,6 +13,7 @@ dependencies = [
     "faker>=40.41.0",
     "numpy>=2.5.4",
     "pandas>=3.0.6",
+    "trino>=0.340.0",
 ]
 
 [project.scripts]
