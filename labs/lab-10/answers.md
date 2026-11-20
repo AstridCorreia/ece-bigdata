@@ -1,42 +1,42 @@
-# Lab 10 - Trino : couche gold en schéma en étoile
+# Lab 10 - Trino: gold layer as a star schema
 
-Lancé dans la même session Python que le lab 9 (`labs/lab-9/trino_conn.py`), avec la même connexion Trino.
+Run in the same Python session as lab 9 (`labs/lab-9/trino_conn.py`), with the same Trino connection.
 
 ## Gold layer with star schema
 
-Tables créées avec `CREATE TABLE AS SELECT` dans `lakehouse.gold` :
-- `dim_user` : 50 lignes, clé `user_key` générée avec `row_number()`
-- `dim_product` : 6 lignes, clé `product_key` générée avec `row_number()`
-- `dim_date` : 118 lignes, une par jour entre la première et la dernière commande, clé `date_key` au format `YYYYMMDD`
-- `fact_orders` : 2829 lignes, comme `silver.orders`
+Tables created with `CREATE TABLE AS SELECT` in `lakehouse.gold`:
+- `dim_user`: 50 rows, key `user_key` generated with `row_number()`
+- `dim_product`: 6 rows, key `product_key` generated with `row_number()`
+- `dim_date`: 118 rows, one per day between the first and the last order, key `date_key` in `YYYYMMDD` format
+- `fact_orders`: 2829 rows, like `silver.orders`
 
-La requête sur l'étoile (année, État, produit) marche, et la reconstruction de `orders_by_state_month` à partir de `fact_orders`, `dim_user` et `dim_date` redonne les mêmes chiffres que la table gold du lab 9.
+The query on the star (year, state, product) works, and rebuilding `orders_by_state_month` from `fact_orders`, `dim_user` and `dim_date` gives the same numbers as the gold table of lab 9.
 
 ## Validation
 
-Les 3 assertions passent : 2829 commandes et 8615 unités dans `fact_orders` comme dans `silver.orders`, et 0 commande sans ligne de dimension.
+The 3 assertions pass: 2829 orders and 8615 units in `fact_orders` like in `silver.orders`, and 0 orders without a dimension row.
 
-### Ces vérifications suffisent-elles à garantir que chaque commande est bien représentée dans `fact_orders` ? Exemple de défaut non détecté, et vérifications à ajouter
-Non. Elles vérifient les totaux et que chaque clé existe dans sa dimension, mais pas que la clé pointe vers la bonne ligne. Par exemple, si deux commandes avaient leurs `user_key` inversées, ou si `date_key` était calculée dans un autre fuseau horaire (une commande à 23h30 rangée le jour suivant), le nombre de lignes, la somme des quantités et les jointures seraient toujours bons. Il faudrait ajouter :
-- une comparaison ligne à ligne : joindre `fact_orders` aux dimensions puis à `silver.orders` sur `order_id`, et vérifier que `user_id`, `product` et `CAST(ordered_at AS date)` sont les mêmes que dans silver
-- l'unicité de `order_id` dans `fact_orders`
-- l'unicité de `user_id` dans `dim_user` et de `product` dans `dim_product` (une seule ligne par valeur métier)
+### Are these checks sufficient to guarantee that every order is correctly represented in `fact_orders`? Give an example of a data defect that could go undetected, and identify additional checks
+No. They check the totals and that every key exists in its dimension, but not that the key points to the right row. For example, if two orders had their `user_key` swapped, or if `date_key` was computed in another time zone (an order at 11:30 pm put on the next day), the row count, the sum of quantities and the joins would all still be fine. We should add:
+- a row by row comparison: join `fact_orders` to the dimensions then to `silver.orders` on `order_id`, and check that `user_id`, `product` and `CAST(ordered_at AS date)` are the same as in silver
+- uniqueness of `order_id` in `fact_orders`
+- uniqueness of `user_id` in `dim_user` and of `product` in `dim_product` (one row per business value)
 
-### Quel est le grain de `fact_orders` ? De `dim_date` ?
-`fact_orders` : une ligne par commande, le même grain que `silver.orders`. `dim_date` : une ligne par jour calendaire.
+### What is the grain of `fact_orders`? Of `dim_date`?
+`fact_orders`: one row per order, the same grain as `silver.orders`. `dim_date`: one row per calendar day.
 
-### Quelle assertion échoue si `silver.users` contient deux fois le même `user_id` ? Laquelle échoue si une commande n'a pas de produit (`NULL`) ?
-Avec un `user_id` en double, `dim_user` a deux lignes pour ce client avec deux `user_key` différentes. Le `LEFT JOIN` duplique alors toutes ses commandes, et c'est `silver_orders == fact_orders` qui échoue (et aussi celle des unités). Avec un produit à `NULL`, le `LEFT JOIN` ne trouve pas de `product_key`, la commande est gardée avec une clé `NULL` : les totaux sont bons, mais l'assertion `unmatched == 0` échoue.
+### Which assertion fails if `silver.users` contains the same `user_id` twice? Which one fails if an order has no product (`NULL`)?
+With a duplicated `user_id`, `dim_user` has two rows for this customer with two different `user_key`. The `LEFT JOIN` then duplicates all their orders, so `silver_orders == fact_orders` fails (and the units one too). With a `NULL` product, the `LEFT JOIN` doesn't find a `product_key`, so the order is kept with a `NULL` key: the totals are fine, but the `unmatched == 0` assertion fails.
 
-### Les clés sont générées avec `row_number()`. Que devient `user_key` si on reconstruit `dim_user` après l'ajout d'un utilisateur ? Conséquence pour `fact_orders` ?
-Les clés sont attribuées dans l'ordre des `user_id`. Si le nouvel utilisateur se place au milieu de cet ordre, tous les utilisateurs après lui changent de `user_key`. Si on ne reconstruit pas `fact_orders` en même temps, les anciennes commandes pointent vers les mauvais utilisateurs. Il faut donc toujours reconstruire la table de faits avec les dimensions, ou utiliser des clés stables (par exemple garder les clés existantes et donner `max(user_key) + 1` aux nouveaux, ou une clé calculée à partir de `user_id`).
+### The surrogate keys are generated with `row_number()`. What happens to `user_key` if `dim_user` is rebuilt after a new user is added? What does it imply for `fact_orders`?
+The keys are given in the order of `user_id`. If the new user lands in the middle of this order, all the users after them get a different `user_key`. If `fact_orders` isn't rebuilt at the same time, the old orders point to the wrong users. So the fact table always has to be rebuilt with the dimensions, or we need stable keys (for example keep the existing keys and give `max(user_key) + 1` to new users, or a key computed from `user_id`).
 
-### `dim_user` écrase les attributs d'un utilisateur. S'il déménage dans un autre État, quel État montrent ses anciennes commandes ? Que faudrait-il pour garder l'historique ?
-Elles montrent le nouvel État, car il n'y a qu'une ligne par utilisateur, avec ses valeurs actuelles : l'historique des ventes par État change après coup. Pour garder l'historique, il faut une dimension à évolution lente de type 2 : une nouvelle ligne (avec une nouvelle `user_key`) à chaque changement, avec des colonnes `valid_from`, `valid_to` et `is_current`. La table de faits prend la clé de la version valide à la date de la commande.
+### `dim_user` overwrites the attributes of a user. If a user moves to another state, which state do the past orders show? What would a dimension that keeps the history of the changes need?
+They show the new state, because there is only one row per user, with its current values: the sales history by state changes afterwards. To keep the history, we need a type 2 slowly changing dimension: a new row (with a new `user_key`) for each change, with `valid_from`, `valid_to` and `is_current` columns. The fact table takes the key of the version that was valid at the order date.
 
-### Comparer `orders_by_state_month` et la requête sur l'étoile qui la reconstruit. Quelles questions chacune peut-elle traiter sans nouvelle table, et que coûte l'étoile à la requête ?
-`orders_by_state_month` répond seulement aux questions par État et par mois. Elle est déjà agrégée (50 lignes), donc très rapide à lire, mais pour une autre question (par produit, par jour de la semaine, par ville...) il faut créer une nouvelle table. L'étoile répond à n'importe quelle combinaison des dimensions (année, trimestre, week-end, produit, ville, date de naissance...) sans nouvelle table. En échange, chaque requête doit relire toute la table de faits, faire les jointures avec les dimensions puis l'agrégation, ce qui coûte plus cher au moment de la requête quand la table de faits devient grosse.
+### Compare `orders_by_state_month` and the star query which rebuilds it. Which questions does each one answer without a new table, and what does the star cost at query time?
+`orders_by_state_month` only answers questions by state and by month. It's already aggregated (50 rows), so it's very fast to read, but for another question (by product, by weekday, by city...) we have to create a new table. The star answers any combination of the dimensions (year, quarter, weekend, product, city, birthdate...) without a new table. In exchange, each query has to read the whole fact table, do the joins with the dimensions and then the aggregation, which costs more at query time when the fact table gets big.
 
 ## Commit
 
-Les métadonnées des tables gold sont copiées depuis le bucket dans `lab_trino/gold/` (sans les dossiers `data/`) et committées.
+The metadata of the gold tables is copied from the bucket into `lab_trino/gold/` (without the `data/` folders) and committed.

@@ -1,63 +1,63 @@
-# Lab 8 - Gouverner les tables Iceberg avec Polaris
+# Lab 8 - Govern Iceberg tables with Polaris
 
-Polaris a été déployé avec Helm dans le namespace (lab de déploiement). Le code de la SparkSession est dans `labs/lab-8/session.py`, lancé dans le shell PySpark avec `exec(open(...).read())`. Le principal est choisi avec la variable d'environnement `POLARIS_PRINCIPAL` (`dev` par défaut).
+Polaris was deployed with Helm in the namespace (deployment lab). The SparkSession code is in `labs/lab-8/session.py`, run in the PySpark shell with `exec(open(...).read())`. The principal is chosen with the `POLARIS_PRINCIPAL` environment variable (`dev` by default).
 
-Note : le dossier `warehouse/` avait été supprimé à la fin du lab Iceberg (cleanup). J'ai donc recréé `lab.silver.orders` et `lab.silver.users` à partir des fichiers Parquet du lab Spark (`silver/spark/*.parquet`) avec `writeTo(...).createOrReplace()` avant de commencer.
+Note: the `warehouse/` folder had been deleted at the end of the Iceberg lab (cleanup). So before starting, I recreated `lab.silver.orders` and `lab.silver.users` from the Parquet files of the Spark lab (`silver/spark/*.parquet`) with `writeTo(...).createOrReplace()`.
 
 ## SparkSession with the Polaris catalog
 
-`SHOW NAMESPACES IN lab` renvoie `silver`, `SHOW NAMESPACES IN polaris` ne renvoie rien au début.
+`SHOW NAMESPACES IN lab` returns `silver`, and `SHOW NAMESPACES IN polaris` returns nothing at the beginning.
 
-### Quel composant a répondu à chacune des deux commandes `SHOW NAMESPACES` ? Comment le voir ?
-Pour `lab`, c'est Spark lui-même : le catalogue `hadoop` liste juste les dossiers sous `s3a://<bucket>/warehouse/`, donc il trouve `silver`. Pour `polaris`, c'est le serveur Polaris qui répond via l'API REST (`http://polaris:8181/api/catalog`), à partir de sa base PostgreSQL. On le voit parce que le dossier `silver` existe bien dans le bucket mais Polaris renvoie une liste vide : il ne regarde pas le bucket, seulement ce qui a été déclaré chez lui.
+### Which component answered each of the two `SHOW NAMESPACES` commands? How can you tell?
+For `lab`, it's Spark itself: the `hadoop` catalog just lists the folders under `s3a://<bucket>/warehouse/`, so it finds `silver`. For `polaris`, it's the Polaris server answering through the REST API (`http://polaris:8181/api/catalog`), from its PostgreSQL database. We can tell because the `silver` folder does exist in the bucket but Polaris returns an empty list: it doesn't look at the bucket, only at what was declared in its catalog.
 
-### Où est utilisé le credential : dans la session Spark, dans le bucket ou dans une requête à Polaris ?
-Dans une requête à Polaris. Spark envoie le `clientId:clientSecret` du principal à Polaris (endpoint OAuth `/api/catalog/v1/oauth/tokens`) pour obtenir un token, puis met ce token dans chaque appel REST. Le bucket ne connaît pas ce credential : les fichiers sont lus et écrits avec les clés S3 d'Onyxia configurées dans S3A.
+### Where is the credential used: in the Spark session, in the bucket, or in a request to Polaris?
+In a request to Polaris. Spark sends the principal's `clientId:clientSecret` to Polaris (OAuth endpoint `/api/catalog/v1/oauth/tokens`) to get a token, then puts this token in every REST call. The bucket doesn't know this credential: files are read and written with the Onyxia S3 keys set in the S3A config.
 
 ## Register the Silver table in Polaris
 
-`version-hint.text` contenait `1`, la table a été enregistrée avec `v1.metadata.json`. Résultat : 2829 commandes, 1 fichier de données, le même snapshot que dans `lab`.
+`version-hint.text` contained `1`, so the table was registered with `v1.metadata.json`. Result: 2829 orders, 1 data file, the same snapshot as in `lab`.
 
-### Qu'est-ce que `register_table` a écrit, dans Polaris et dans le bucket ?
-Dans Polaris, une entrée `silver.orders` dans le catalogue, qui pointe vers `v1.metadata.json`. Dans le bucket, rien : il y avait 5 objets sous `warehouse/silver/orders/` avant et toujours 5 après. Les données et les métadonnées ne sont pas copiées, Polaris garde juste le pointeur.
+### What did `register_table` write, in Polaris and in the bucket?
+In Polaris, an entry `silver.orders` in the catalog, pointing to `v1.metadata.json`. In the bucket, nothing: there were 5 objects under `warehouse/silver/orders/` before and still 5 after. Data and metadata are not copied, Polaris only keeps the pointer.
 
-### Pourquoi c'est dangereux de continuer à écrire dans cette table via le catalogue `lab` une fois qu'elle est enregistrée dans `polaris` ?
-Les deux catalogues ont chacun leur propre pointeur vers la version courante. Un commit via `lab` crée un `v2.metadata.json` et met à jour `version-hint.text`, mais Polaris pointe toujours sur l'ancienne version : les lecteurs qui passent par Polaris (comme Trino plus tard) ne voient pas les nouvelles données. Si on écrit des deux côtés, on a deux historiques différents pour la même table. En plus, en passant par `lab` on contourne complètement les droits de Polaris.
+### Why is it dangerous to keep writing to this table through the `lab` catalog once it is registered in `polaris`?
+Each catalog has its own pointer to the current version. A commit through `lab` creates a `v2.metadata.json` and updates `version-hint.text`, but Polaris still points to the old version: readers going through Polaris (like Trino later) don't see the new data. If we write on both sides, we end up with two different histories for the same table. Also, going through `lab` completely bypasses the Polaris permissions.
 
 ## Create tables as `dev`
 
-`SHOW TABLES IN polaris.silver` montre `orders`, avec un seul snapshot `overwrite` (celui du `createOrReplace()`). La table `polaris.silver.users` a été créée à partir de `lab.silver.users` (50 utilisateurs).
+`SHOW TABLES IN polaris.silver` shows `orders`, with a single `overwrite` snapshot (the one from `createOrReplace()`). The table `polaris.silver.users` was created from `lab.silver.users` (50 users).
 
-### Où Polaris a stocké les fichiers de `silver.users`, et pourquoi ?
-Dans `s3://<bucket>/warehouse/silver/users/`, parce que le catalogue a comme `default-base-location` `s3://<bucket>/warehouse/` et Polaris ajoute `<namespace>/<table>`. C'est exactement le même dossier que `lab.silver.users`, donc les fichiers des deux tables sont mélangés : on reconnaît ceux de `lab` (`v1.metadata.json`, `version-hint.text`) et ceux de Polaris (`00000-<uuid>.metadata.json`, puis `00001-...` après le changement de schéma). Il y a aussi 2 fichiers Parquet dans `data/`, un par table.
+### Where did Polaris store the files for `silver.users`, and why?
+In `s3://<bucket>/warehouse/silver/users/`, because the catalog's `default-base-location` is `s3://<bucket>/warehouse/` and Polaris adds `<namespace>/<table>`. It's exactly the same folder as `lab.silver.users`, so the files of both tables are mixed: we can recognize the `lab` ones (`v1.metadata.json`, `version-hint.text`) and the Polaris ones (`00000-<uuid>.metadata.json`, then `00001-...` after the schema change). There are also 2 Parquet files in `data/`, one per table.
 
-### Quelle différence entre "registered" et "created through Polaris" pour les fichiers de données ?
-Pour `orders` (registered), les fichiers ont été écrits avant, par Spark via le catalogue `hadoop`, et Polaris ne fait que les référencer. Pour `users` (created), c'est Polaris qui a choisi l'emplacement et qui gère les métadonnées dès le début. Dans les deux cas, les fichiers Parquet sont écrits par Spark avec les clés S3, pas par Polaris.
+### Both tables are in your bucket. What is the difference between "registered" and "created through Polaris" for the data files?
+For `orders` (registered), the files were written before, by Spark through the `hadoop` catalog, and Polaris only references them. For `users` (created), Polaris chose the location and manages the metadata from the start. In both cases, the Parquet files are written by Spark with the S3 keys, not by Polaris.
 
 ## Schema change as `dev`
 
-`ALTER TABLE polaris.silver.users ADD COLUMN country STRING` marche, `DESCRIBE` montre la nouvelle colonne.
+`ALTER TABLE polaris.silver.users ADD COLUMN country STRING` works, and `DESCRIBE` shows the new column.
 
-### Quel fichier de métadonnées enregistre le changement ? Est-ce le même que celui de `register_table` ?
-Un nouveau fichier `00001-<uuid>.metadata.json` dans `warehouse/silver/users/metadata/`. Ce n'est pas le même : `register_table` pointait vers `orders/metadata/v1.metadata.json`, et de toute façon Iceberg ne modifie jamais un fichier de métadonnées existant, il en écrit un nouveau à chaque commit et Polaris déplace son pointeur dessus.
+### Which metadata file records the change? Is it the same file that `register_table` pointed to?
+A new file `00001-<uuid>.metadata.json` in `warehouse/silver/users/metadata/`. It's not the same: `register_table` pointed to `orders/metadata/v1.metadata.json`, and anyway Iceberg never modifies an existing metadata file, it writes a new one at each commit and Polaris moves its pointer to it.
 
-### Quel privilège Polaris vérifie pour cette requête ?
-L'opération vérifiée est `ADD_TABLE_SCHEMA` (c'est le nom qu'on retrouve dans l'erreur de l'analyst). Il faut un droit d'écriture sur les métadonnées de la table (`TABLE_WRITE_PROPERTIES`, ou le privilège plus fin `TABLE_ADD_SCHEMA` dans les versions récentes). `dev` l'a grâce à `CATALOG_MANAGE_CONTENT` (via `catalog_contributor`), qui inclut `TABLE_FULL_METADATA` et `TABLE_WRITE_DATA`.
+### Which privilege does Polaris check for this statement?
+The operation checked is `ADD_TABLE_SCHEMA` (it's the name we see in the analyst's error). It needs a write privilege on the table metadata (`TABLE_WRITE_PROPERTIES`, or the finer `TABLE_ADD_SCHEMA` privilege in recent versions). `dev` has it through `CATALOG_MANAGE_CONTENT` (via `catalog_contributor`), which includes `TABLE_FULL_METADATA` and `TABLE_WRITE_DATA`.
 
 ## Read as the analyst
 
-En `analyst`, `SHOW TABLES` et le `SELECT product, count(*)` marchent. L'`INSERT` échoue avec :
+As `analyst`, `SHOW TABLES` and the `SELECT product, count(*)` work. The `INSERT` fails with:
 `ForbiddenException: Forbidden: Principal 'analyst' with activated PrincipalRoles '[data_analyst]' and activated grants via '[data_analyst, catalog_reader]' is not authorized for op ADD_TABLE_SNAPSHOT`
-Le `ALTER TABLE ... ADD COLUMN phone` échoue de la même façon, avec `op ADD_TABLE_SCHEMA`.
+The `ALTER TABLE ... ADD COLUMN phone` fails the same way, with `op ADD_TABLE_SCHEMA`.
 
-### Quel privilège manque pour l'`INSERT` ? Quels privilèges donne `catalog_reader` ?
-Il manque un droit d'écriture sur la table : `TABLE_WRITE_DATA` (ou le privilège fin `TABLE_ADD_SNAPSHOT`), nécessaire pour l'opération `ADD_TABLE_SNAPSHOT`. `catalog_reader` donne seulement `TABLE_READ_DATA`, `TABLE_READ_PROPERTIES` et `CATALOG_READ_PROPERTIES`, donc de la lecture.
+### Which privilege is missing for the `INSERT`? Which privileges does `catalog_reader` provide?
+A write privilege on the table is missing: `TABLE_WRITE_DATA` (or the finer `TABLE_ADD_SNAPSHOT` privilege), needed for the `ADD_TABLE_SNAPSHOT` operation. `catalog_reader` only gives `TABLE_READ_DATA`, `TABLE_READ_PROPERTIES` and `CATALOG_READ_PROPERTIES`, so read access only.
 
-### En repassant en `dev`, est-ce que l'`INSERT` raté a créé un snapshot ?
-Non, `silver.orders` a toujours un seul snapshot et 2829 lignes. Spark écrit d'abord le fichier Parquet, puis demande le commit à Polaris, qui refuse. Spark a alors annulé l'écriture (`IcebergBatchWrite ... aborted`) et supprimé le fichier : il n'y a toujours qu'un seul fichier dans `warehouse/silver/orders/data/`.
+### Check the snapshots of `silver.orders` as `dev`. Did the failed `INSERT` create one?
+No, `silver.orders` still has a single snapshot and 2829 rows. Spark first writes the Parquet file, then asks Polaris to commit, and Polaris refuses. Spark then aborted the write (`IcebergBatchWrite ... aborted`) and deleted the file: there is still only one file in `warehouse/silver/orders/data/`.
 
-Limite : Polaris contrôle seulement le catalogue. La session de l'analyst a quand même les clés S3, donc elle pourrait écrire directement dans le bucket ou passer par le catalogue `lab`. Sans credential vending, Polaris ne peut pas empêcher ça.
+Limit: Polaris only controls the catalog. The analyst's session still has the S3 keys, so it could write directly in the bucket or go through the `lab` catalog. Without credential vending, Polaris can't prevent that.
 
 ## Cleanup
 
-Je n'ai pas supprimé `polaris.silver.users` : le lab Trino lit `lakehouse.silver.users` et `lakehouse.silver.orders` via Polaris, donc les deux tables doivent rester enregistrées.
+I didn't drop `polaris.silver.users`: the Trino lab reads `lakehouse.silver.users` and `lakehouse.silver.orders` through Polaris, so both tables have to stay registered.
